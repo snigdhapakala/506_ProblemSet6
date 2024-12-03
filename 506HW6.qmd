@@ -1,0 +1,13 @@
+---
+title: "506ProblemSet6"
+author: "Snigdha Pakala"
+format: pdf
+editor: visual
+---
+
+## Link to my GitHub repository: 
+
+```{r}
+
+
+```
