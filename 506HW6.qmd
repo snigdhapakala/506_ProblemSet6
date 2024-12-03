@@ -5,9 +5,435 @@ format: pdf
 editor: visual
 ---
 
-## Link to my GitHub repository: 
+## Link to my GitHub repository: <https://github.com/snigdhapakala/506_ProblemSet6>
+
+### Part a: Estimation of standard deviation
+
+Calculate the average RF for each team in the Fielding table:
+
+```{r}
+library(DBI)     
+
+lahman <- dbConnect(RSQLite::SQLite(), "lahman_1871-2022.sqlite")
+lahman
+
+dbListTables(lahman)
+
+# Make my own table of Fielding data to work with
+fielding <- dbReadTable(lahman, "Fielding")
+
+fielding_df <- as.data.frame(fielding)
+
+colnames(fielding)
+
+# Add in RF calculation as new column
+fielding_df$RF <- 3*((fielding_df$PO + fielding_df$A) / (fielding_df$InnOuts))
+
+# Remove na's for RF
+fielding_df <- fielding_df[!is.na(fielding_df$RF), ]
+
+# Provide average RF per team
+library(dplyr)
+avg_rf_by_team <- fielding_df %>%
+                  group_by(teamID) %>%
+                  summarize(avg_RF = mean(RF, na.rm = TRUE)) %>%
+                  ungroup()
+
+colnames(avg_rf_by_team) <- c("teamID", "avg_RF")
+
+avg_rf_by_team
+```
+
+#1: Estimate standard deviation without any parallel processing:
+
+```{r}
+# Create a matrix for different teams
+boot_mat <- matrix(NA, nrow = 1000, ncol = length(unique(fielding_df$teamID)))
+
+teams <- unique(fielding_df$teamID)
+
+colnames(boot_mat) <- teams
+
+# bootstrap samples
+for (team in teams) {
+  # Extract RF values for each team team
+  team_specific_rf <- fielding_df[fielding_df$teamID == team, "RF"]
+  
+  # Perform bootstrap sampling and compute the mean of resampled RF
+  boot_samples <- replicate(1000, mean(sample(team_specific_rf, 
+                                              replace = TRUE), na.rm = TRUE))
+  
+  boot_mat[, team] <- boot_samples
+}
+# quick check: 
+# head(boot_mat)
+
+# Calculate standard deviation per team
+std_dev_df <- as.data.frame(apply(boot_mat, 2, sd, na.rm = TRUE))
+colnames(std_dev_df) <- c("std_dev")
+std_dev_df$teamID <- rownames(std_dev_df)
+
+# Display results for standard deviation per team 
+std_dev_df
+```
+
+#2: Estimate standard deviation using parallel processing with the parallel package:
+
+```{r}
+library(parallel)
+
+num_cores <- detectCores() - 1
+
+#' Use this function for the bootstrap sampling with replicate
+#'
+#' @param team specific team within all of them
+#'
+#' @return bootstrap sample
+#' @export
+#'
+#' @examples
+bootstrap_function <- function(team) {
+  # Get the RF values per team
+  team_specific_rf <- fielding_df[fielding_df$teamID == team, "RF"]
+  # 1000 bootstrap samples which calculate means 
+  replicate(1000, mean(sample(team_specific_rf, replace = TRUE), na.rm = TRUE))
+}
+
+# Used 506 notes for mclapply and do.call
+boot_mat_list <- mclapply(teams, bootstrap_function, mc.cores = num_cores)
+
+boot_mat_parallel <- do.call(cbind, boot_mat_list)
+
+colnames(boot_mat_parallel) <- teams
+
+# Calculate standard deviation for the bootstrapping with parallel processing
+std_dev_parallel_df <- as.data.frame(apply(boot_mat_parallel, 2, sd, na.rm = TRUE))
+
+colnames(std_dev_parallel_df) <- c("std_dev_parallel")
+
+std_dev_parallel_df$teamID <- rownames(std_dev_parallel_df)
+
+# Display results for standard deviation per team 
+std_dev_parallel_df
+```
+
+#3: Estimate standard deviation using parallel processing with the future package:
+
+```{r}
+library(future)
+
+plan(multisession, workers = detectCores() - 1)
+
+#' Perform bootstrapping sample per team using replicate
+#'
+#' @param team specific team within all of them
+#'
+#' @return bootstrap sample
+#' @export
+#'
+#' @examples
+bootstrap_function <- function(team_data) {
+  # 1000 bootstrap samples and the means calculated
+  replicate(1000, mean(sample(team_data, replace = TRUE), na.rm = TRUE))
+}
+
+team_data_list <- lapply(teams, function(team) {
+  fielding_df[fielding_df$teamID == team, "RF"]
+})
+
+# Make parallel jobs using futures
+futures_list <- lapply(team_data_list, function(team_data) {
+  future({
+    bootstrap_function(team_data)
+  })
+})
+
+# Get results using 506 notes
+boot_mat_list <- lapply(futures_list, value)
+
+boot_mat_future <- do.call(cbind, boot_mat_list)
+
+colnames(boot_mat_future) <- teams
+
+# Calculate standard deviation for the bootstrapping with future
+std_dev_future_df <- as.data.frame(apply(boot_mat_future, 2, sd, na.rm = TRUE))
+
+colnames(std_dev_future_df) <- c("std_dev_future")
+
+std_dev_future_df$teamID <- rownames(std_dev_future_df)
+
+# Displau results 
+std_dev_future_df
+```
+
+### Part b: Generate a table showing the estimated RF and associated standard errors *for the teams with the 10 highest RF* from the three approaches. 
+
+#### Standard error:
+
+```{r}
+# Filter out NaN or Inf values from each standard deviation data frame
+std_dev_df_clean <- std_dev_df %>%
+  filter(!is.nan(std_dev) & !is.infinite(std_dev))
+
+std_dev_parallel_df_clean <- std_dev_parallel_df %>%
+  filter(!is.nan(std_dev_parallel) & !is.infinite(std_dev_parallel))
+
+std_dev_future_df_clean <- std_dev_future_df %>%
+  filter(!is.nan(std_dev_future) & !is.infinite(std_dev_future))
+
+# Add average RF to each standard deviation table (cleaned)
+std_dev_df_clean$avg_RF <- avg_rf_by_team$avg_RF[match(std_dev_df_clean$teamID,
+                                                       avg_rf_by_team$teamID)]
+std_dev_parallel_df_clean$avg_RF <- avg_rf_by_team$avg_RF[match(std_dev_parallel_df_clean$teamID, 
+                                                                avg_rf_by_team$teamID)]
+std_dev_future_df_clean$avg_RF <- avg_rf_by_team$avg_RF[match(std_dev_future_df_clean$teamID,
+                                                              avg_rf_by_team$teamID)]
+
+# Calculate sample sizes for each team for standard error calculation
+sample_size_by_team <- fielding_df %>%
+  group_by(teamID) %>%
+  summarize(sample_size = n())
+
+# Join the sample sizes with the standard deviation tables
+std_dev_df_clean <- std_dev_df_clean %>%
+  left_join(sample_size_by_team, by = "teamID")
+
+std_dev_parallel_df_clean <- std_dev_parallel_df_clean %>%
+  left_join(sample_size_by_team, by = "teamID")
+
+std_dev_future_df_clean <- std_dev_future_df_clean %>%
+  left_join(sample_size_by_team, by = "teamID")
+
+# Calculate standard error (SE = SD / sqrt(n)) for each table
+std_dev_df_clean$std_error <- std_dev_df_clean$std_dev / 
+  sqrt(std_dev_df_clean$sample_size)
+std_dev_parallel_df_clean$std_error <- std_dev_parallel_df_clean$std_dev_parallel / 
+  sqrt(std_dev_parallel_df_clean$sample_size)
+std_dev_future_df_clean$std_error <- std_dev_future_df_clean$std_dev_future / 
+  sqrt(std_dev_future_df_clean$sample_size)
+
+# Extract top 10 teams by avg_RF (after cleaning)
+top_10_teams_clean <- avg_rf_by_team %>%
+  filter(!is.na(avg_RF) & !is.infinite(avg_RF)) %>%
+  arrange(desc(avg_RF)) %>%
+  head(10) %>%
+  pull(teamID)
+
+# Filter for top 10 teams only, from the cleaned data frames
+top_10_not_parallel_clean <- std_dev_df_clean %>%
+  filter(teamID %in% top_10_teams_clean) %>%
+  select(teamID, avg_RF, std_error) %>%
+  mutate(approach = "Not Parallel")
+
+top_10_parallel_clean <- std_dev_parallel_df_clean %>%
+  filter(teamID %in% top_10_teams_clean) %>%
+  select(teamID, avg_RF, std_error = std_error) %>% 
+  mutate(approach = "Parallel")
+
+top_10_future_clean <- std_dev_future_df_clean %>%
+  filter(teamID %in% top_10_teams_clean) %>%
+  select(teamID, avg_RF, std_error = std_error) %>% 
+  mutate(approach = "Future")
+
+# Combine all results into a final table and sort
+combined_table_clean <- bind_rows(
+  top_10_not_parallel_clean,
+  top_10_parallel_clean,
+  top_10_future_clean
+)
+
+colnames(combined_table_clean) <- c("Team ID", "Average RF", "Standard Error", "Approach")
+
+final_table_clean <- combined_table_clean %>% 
+                     arrange(Approach, desc(`Average RF`))
+
+# Display the final table (top 10 teams only)
+print(final_table_clean)
+```
+
+#### sd version:
 
 ```{r}
 
+# Filter out NaN or Inf values from each standard deviation data frame
+std_dev_df_clean <- std_dev_df %>%
+  filter(!is.nan(std_dev) & !is.infinite(std_dev))
+
+std_dev_parallel_df_clean <- std_dev_parallel_df %>%
+  filter(!is.nan(std_dev_parallel) & !is.infinite(std_dev_parallel))
+
+std_dev_future_df_clean <- std_dev_future_df %>%
+  filter(!is.nan(std_dev_future) & !is.infinite(std_dev_future))
+
+# Add average RF to each standard deviation table (cleaned)
+std_dev_df_clean$avg_RF <- avg_rf_by_team$avg_RF[match(std_dev_df_clean$teamID, avg_rf_by_team$teamID)]
+
+std_dev_parallel_df_clean$avg_RF <- avg_rf_by_team$avg_RF[match(std_dev_parallel_df_clean$teamID, avg_rf_by_team$teamID)]
+
+std_dev_future_df_clean$avg_RF <- avg_rf_by_team$avg_RF[match(std_dev_future_df_clean$teamID, avg_rf_by_team$teamID)]
+
+# Extract top 10 teams by avg_RF (after cleaning)
+top_10_teams_clean <- avg_rf_by_team %>%
+  filter(!is.na(avg_RF) & !is.infinite(avg_RF)) %>%
+  arrange(desc(avg_RF)) %>%
+  head(10) %>%
+  pull(teamID)
+
+# Filter for top 10 teams only, from the cleaned data frames
+
+top_10_not_parallel_clean <- std_dev_df_clean %>%
+  filter(teamID %in% top_10_teams_clean) %>%
+  select(teamID, avg_RF, std_dev) %>%
+  mutate(approach = "Not Parallel")
+
+top_10_parallel_clean <- std_dev_parallel_df_clean %>%
+  filter(teamID %in% top_10_teams_clean) %>%
+  select(teamID, avg_RF, std_dev = std_dev_parallel) %>% 
+  mutate(approach = "Parallel")
+
+top_10_future_clean <- std_dev_future_df_clean %>%
+  filter(teamID %in% top_10_teams_clean) %>%
+  select(teamID, avg_RF, std_dev = std_dev_future) %>% 
+  mutate(approach = "Future")
+
+# Combine all results into a final table and sort
+combined_table_clean <- bind_rows(
+  top_10_not_parallel_clean,
+  top_10_parallel_clean,
+  top_10_future_clean
+)
+
+# Rename columns for clarity
+colnames(combined_table_clean) <- c("Team ID", "Average RF", "Standard Deviation", "Approach")
+
+# Sort the combined table 
+final_table_clean <- combined_table_clean %>%
+  arrange(Approach, desc(`Average RF`))
+
+# Display the final table (top 10 teams only)
+print(final_table_clean)
+
 
 ```
+
+### Part c: Report and discuss the performance difference between the versions.
+
+```{r}
+##########################################################################################
+
+# Timing non-parallel method
+start_time <- Sys.time()
+
+# Run the non-parallel bootstrap process here
+boot_mat <- matrix(NA, nrow = 1000, ncol = length(unique(fielding_df$teamID)))
+teams <- unique(fielding_df$teamID)
+colnames(boot_mat) <- teams
+
+set.seed(123)
+
+# bootstrap samples
+for (team in teams) {
+  # Extract RF values for each team
+  team_specific_rf <- fielding_df[fielding_df$teamID == team, "RF"]
+  
+  # Perform bootstrap sampling and compute the mean of resampled RF
+  boot_samples <- replicate(1000, mean(sample(team_specific_rf, replace = TRUE), 
+                                       na.rm = TRUE))
+  
+  boot_mat[, team] <- boot_samples
+}
+
+
+# Calculate standard deviation per team
+std_dev_df <- as.data.frame(apply(boot_mat, 2, sd, na.rm = TRUE))
+colnames(std_dev_df) <- c("std_dev")
+std_dev_df$teamID <- rownames(std_dev_df)
+
+
+end_time <- Sys.time()
+non_parallel_time <- end_time - start_time
+cat("Non-parallel execution time:", non_parallel_time, "\n")
+
+##########################################################################################
+
+# Timing parallel 
+start_time <- Sys.time()
+
+# Run the parallel bootstrap process using mclapply here
+library(parallel)
+set.seed(123, kind = "L'Ecuyer-CMRG")
+
+num_cores <- detectCores() - 1
+
+#' Use this function for the bootstrap sampling with replicate
+bootstrap_function <- function(team) {
+  # Get the RF values per team
+  team_specific_rf <- fielding_df[fielding_df$teamID == team, "RF"]
+  # 1000 bootstrap samples which calculate means 
+  replicate(1000, mean(sample(team_specific_rf, replace = TRUE), na.rm = TRUE))
+}
+
+boot_mat_list <- mclapply(teams, bootstrap_function, mc.cores = num_cores)
+boot_mat_parallel <- do.call(cbind, boot_mat_list)
+colnames(boot_mat_parallel) <- teams
+
+# Calculate standard deviation for the bootstrapping with parallel processing
+std_dev_parallel_df <- as.data.frame(apply(boot_mat_parallel, 2, sd, na.rm = TRUE))
+colnames(std_dev_parallel_df) <- c("std_dev_parallel")
+std_dev_parallel_df$teamID <- rownames(std_dev_parallel_df)
+
+
+end_time <- Sys.time()
+parallel_time <- end_time - start_time
+cat("Parallel execution time:", parallel_time, "\n")
+
+##########################################################################################
+# Timing parallel with future
+start_time <- Sys.time()
+
+# Run the parallel bootstrap process using future here
+library(future)
+options(future.rng.onMisuse = "ignore")
+set.seed(123)
+
+plan(multisession, workers = detectCores() - 1) 
+
+bootstrap_function <- function(team_data) {
+  # 1000 bootstrap samples and the means calculated
+  replicate(1000, mean(sample(team_data, replace = TRUE), na.rm = TRUE))
+}
+
+team_data_list <- lapply(teams, function(team) {
+  fielding_df[fielding_df$teamID == team, "RF"]
+})
+
+# Make parallel jobs using futures
+futures_list <- lapply(team_data_list, function(team_data) {
+  future({
+    bootstrap_function(team_data)
+  })
+})
+
+# Get results using 506 notes
+boot_mat_list <- lapply(futures_list, value)
+boot_mat_future <- do.call(cbind, boot_mat_list)
+colnames(boot_mat_future) <- teams
+
+# Calculate standard deviation for the bootstrapping with future
+std_dev_future_df <- as.data.frame(apply(boot_mat_future, 2, sd, na.rm = TRUE))
+colnames(std_dev_future_df) <- c("std_dev_future")
+std_dev_future_df$teamID <- rownames(std_dev_future_df)
+
+end_time <- Sys.time()
+future_time <- end_time - start_time
+cat("Future execution time:", future_time, "\n")
+```
+
+```{r}
+# Final Results
+cat("Non-parallel execution time:", non_parallel_time, "\n")
+cat("Parallel execution time:", parallel_time, "\n")
+cat("Future execution time:", future_time, "\n")
+```
+
+We have that non-parallel execution time is higher than the other two, which we expect because the non-parallel execution method processes each team sequentially, performing bootstrap sampling and calculating standard deviations one at a time. This results in a longer execution time and becomes computationally inefficient as the number of teams or calculation complexity increases. In contrast, parallel execution using the mclapply function from the parallel package distributes the workload across multiple cores, significantly reducing the execution time. This performance improvement is due to the simultaneous processing of teams. And lastly, the approach using the future package offers asynchronous execution, also reducing execution time but it also incurs overhead due to managing multiple jobs, making it a bit less efficient than the parallel processing method with mclapply for this task. Thus these results are reasonable for non-parallel to be the slowest and the parallel method to be the fastest.
